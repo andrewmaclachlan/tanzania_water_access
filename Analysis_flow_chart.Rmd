@@ -1,0 +1,126 @@
+```{r}
+library(extrafontdb)
+library(extrafont)
+
+remove.packages("Rttf2pt1")   
+remotes::install_version("Rttf2pt1", version = "1.3.8") 
+
+```
+
+
+```{r}
+flow <- DiagrammeR::grViz("digraph {
+
+#graph [layout = dot, rankdir = LR]
+
+# define the global styles of the nodes. We can override these in box if we wish
+node [shape = rectangle, style = filled, fillcolor = Linen,  fontname = helvetica]
+
+      subgraph cluster_0 {
+        graph[shape = rectangle]
+        style = rounded
+        bgcolor = honeydew
+        fontname = Helvetica
+
+        label = 'R'
+        node[shape = rectangle, fillcolor = LemonChiffon, margin = 0.25]
+        data2 [label = 'Friction surface (1km raster)', shape = folder, fillcolor = Beige]
+        data3 [label = 'Water points', shape = folder, fillcolor = Beige]
+        data4 [label = 'Tanzania outline', shape = folder, fillcolor = Beige]
+        data6 [label = 'Landcover (raster)', shape = folder, fillcolor = Beige]
+
+
+        landcover_join [label =  'Merge landcover tiles']
+
+
+        transition [label =  'Transition costs']
+
+        access [label =  'Accessibility from each 1km cell to the nearest water point (raster)']
+        subset [label = 'Spatial subset \n points within Tanzania']
+
+      }
+
+
+      subgraph cluster_1 {
+        graph[shape = rectangle]
+        style = rounded
+        bgcolor = aliceblue
+        fontname = helvetica
+
+    
+        label = 'PostGIS'
+        node[shape = rectangle, fillcolor = LemonChiffon, margin = 0.25]
+        data1 [label = 'World pop 2020 (100m raster)', shape = folder, fillcolor = Beige]
+
+
+        centroid [label =  'Raster to centroid']
+
+
+        polygonise [label =  'Raster to polygon']
+        
+        join [label= 'Spatial join: accessibility + population']
+        
+        tempdata[label = 'Accessibility and population per 1km polygons', shape = folder, fillcolor = Beige]
+
+        join [label= 'Spatial join: accessibility + population']
+   
+        
+        topoints [label= 'Polygon to centroids']
+        
+        queryraster [label= 'Extract the landcover value (from the raster) at centroids']
+
+        join2 [label= 'Spatial join: accessibility, population + point data with landcover']
+
+        tempdata2[label = 'Accessibility, population and landcover per 1km polygons', shape = folder, fillcolor = Beige]
+
+
+      }
+
+
+
+
+# edge definitions with the node IDs
+
+{data1}  -> centroid -> join
+{data2}  -> transition  -> access
+
+subset -> access -> polygonise -> join
+
+{data3, data4}  -> subset 
+
+
+join -> tempdata -> join2 -> tempdata2 
+
+tempdata -> topoints -> queryraster -> join2
+
+
+#access -> landcover_resample
+
+data6 -> landcover_join -> queryraster
+
+#landcover_resample -> access
+
+
+#landcover_resample -> centroid2 -> join2
+}
+
+
+")
+
+flow
+```
+```{r}
+library(tidyverse)
+library(png)
+library(rsvg)
+library(DiagrammeRsvg)
+export_svg(flow) %>%
+  charToRaw() %>%
+  rsvg() %>%
+  png::writePNG(.,"Output_data/analysis_flow_chart.png")
+```
+
+
+
+
+

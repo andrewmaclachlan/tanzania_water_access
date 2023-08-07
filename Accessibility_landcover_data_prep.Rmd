@@ -1,0 +1,223 @@
+# Tanzania population water point accessibility
+
+The final output creates a regular grid of 1km cells, with each cell containing attributes on:
+
+-   Time to water point
+-   Population estimates
+-   Land cover
+
+The analysis is run twice, once considering all water points and in the second instance just considering functional waterpoints. 
+
+## Data downloads
+
+-   [Malaria Atlas 1km walking only friction surface](https://data.malariaatlas.org/maps?layers=Accessibility:202001_Global_Walking_Only_Friction_Surface,Malaria:202206_Global_Pf_Parasite_Rate)
+-   [World Pop 2020 Population estimates](https://data.worldpop.org/GIS/Population/Global_2000_2020_Constrained/2020/maxar_v1/TZA/tza_ppp_2020_UNadj_constrained.tif)
+-   [European Union Global Human Settlement](https://ghsl.jrc.ec.europa.eu/download.php) 2020 1km land cover. Tiles:
+    -   [R10, C22](https://jeodpp.jrc.ec.europa.eu/ftp/jrc-opendata/GHSL/GHS_BUILT_S_GLOBE_R2023A/GHS_BUILT_S_E2020_GLOBE_R2023A_54009_100/V1-0/tiles/GHS_BUILT_S_E2020_GLOBE_R2023A_54009_100_V1_0_R10_C22.zip)
+    -   [R10, C23](https://jeodpp.jrc.ec.europa.eu/ftp/jrc-opendata/GHSL/GHS_BUILT_S_GLOBE_R2023A/GHS_BUILT_S_E2020_GLOBE_R2023A_54009_100/V1-0/tiles/GHS_BUILT_S_E2020_GLOBE_R2023A_54009_100_V1_0_R10_C23.zip)
+    -   [R11, C22](https://jeodpp.jrc.ec.europa.eu/ftp/jrc-opendata/GHSL/GHS_BUILT_S_GLOBE_R2023A/GHS_BUILT_S_E2020_GLOBE_R2023A_54009_100/V1-0/tiles/GHS_BUILT_S_E2020_GLOBE_R2023A_54009_100_V1_0_R11_C22.zip)
+    -   [R11, C23](https://jeodpp.jrc.ec.europa.eu/ftp/jrc-opendata/GHSL/GHS_BUILT_S_GLOBE_R2023A/GHS_BUILT_S_E2020_GLOBE_R2023A_54009_100/V1-0/tiles/GHS_BUILT_S_E2020_GLOBE_R2023A_54009_100_V1_0_R11_C23.zip)
+
+This analysis is divided between R and PostGIS.
+
+## The code in R:
+
+**Water points and accessibility**
+
+-   Load water points and filter them, removing NAs and those outside Tanzania
+-   Take friction data which is a measure of how hard it is to cross a 1km cell. From this we calculate travel times to nearest waterpoint.
+
+**Landcover**
+
+-   The individual landcover tiles are loaded and mosaicked into a single continuous raster dataset.
+
+## PostGIS
+
+The following data is loaded into PostGIS
+
+-   World pop population data at 100m grid cells for 2020
+-   Travel times to nearest water point (1km raster)
+-   2020 landcover data (1km raster)
+
+In PostGIS the following pre-processing and analysis is conducted
+
+**Pre-processing**
+
+-   The accessibility raster (1km) is converted to polygons
+-   The world pop data (100m) is converted to centroids
+
+**Analysis**
+
+-   The world pop centroids are joined to the accessibility polygons with the population in each 1km cell being summed giving accessibility and population per 1km polygon.
+
+-   The accessibility and population per 1km polygon is converted to centroids, which are used to extract a land cover value
+
+**Outputs**
+
+-   Accessibility and population per 1km polygon are then spatially joined with the land cover centroids to produce a final 1km polygon cell layer with accessibility, population and landcover.
+
+## R analysis
+
+```{r}
+knitr::opts_chunk$set(warning = FALSE, message = FALSE)
+```
+
+
+## libraries
+
+```{r, message=FALSE}
+library(sf)
+library(terra)
+library(raster)
+library(tidyverse)
+library(gdistance)
+library(tmap)
+library(stars)
+```
+
+# Loading/pre-processing
+
+## Country
+
+Load Tanzania country outline, this will be used to remove water points that fall outside of the country boundary.
+
+```{r message=FALSE, warning=FALSE, results='hide'}
+
+Tanzania_shape <- st_read("Input_data/gadm41_TZA_shp/gadm41_TZA_0.shp")%>%
+  st_transform(., 21035)
+
+```
+
+## Water points
+
+Load water points, remove NA values, project to local coordinate reference system and the plot to check
+
+```{r}
+wp_data <- read_csv("Input_data/CDMT_WP/CDMT_WPs_2019.csv", locale = locale(encoding = "latin1"),
+na = "n/a")%>%
+  filter(!is.na(LONGITUDE))%>%
+  filter(!is.na(LATITUDE))%>%
+  st_as_sf(., coords = c("LONGITUDE", "LATITUDE"),  crs = 4326)%>%
+  st_transform(., 21035)%>%
+  # comment this out if all points are required, this is just functional points  
+  filter(DPSTATUS=="Functional")
+
+
+#plot to check read in correctly 
+tm1 <- tm_shape(Tanzania_shape)+
+  tm_polygons()+
+  tm_shape(wp_data) + 
+  tm_dots()
+
+#plot
+tm1
+
+```
+
+Remove water points that our outside of the country boundary, plot to check
+
+```{r}
+points_in_tanzania <- wp_data[Tanzania_shape,]
+
+tm2 <- tm_shape(Tanzania_shape)+
+  tm_polygons() +
+  tm_shape(points_in_tanzania) + 
+  tm_dots()
+
+#plot
+tm2
+
+```
+
+## Friction surface
+
+Read in the friction surface, transform to local coordinate reference system and plot to check.
+
+See this article for more info: [https://medium.com/\@abertozz/mapping-travel-times-with-malariaatlas-and-friction-surfaces-f4960f584f08](https://medium.com/@abertozz/mapping-travel-times-with-malariaatlas-and-friction-surfaces-f4960f584f08){.uri}. Also see: <https://t1nak.github.io/blog/2020/cost/>
+
+```{r}
+#creating function for transforming stars to raster
+
+Tz_friction <- terra::rast("Input_data/Malaria_atlas/2020_walking_only_friction_surface_TZA.tiff")%>%
+  terra::project(., "EPSG:21035")%>%
+  raster()
+
+#plot to check
+#plot(Tz_friction)
+
+```
+
+Work out transition costs, we use Queen's case contiguity - this means that we only work out the cost from a central pixel to the neighbours (queen's case). See: <https://gis.stackexchange.com/questions/355321/transition-function-inputs>
+
+Note there was an error with the pacakge gdistance and the latest version of R. To resolve this you must install older package version with latest version of R - <https://github.com/AgrDataSci/gdistance/issues/15>
+
+The raster plotted here is travel time to most accessible water point.
+
+```{r}
+
+cost <- gdistance::transition(Tz_friction, function(x) 1/mean(x), 8) 
+cost_correct <- gdistance::geoCorrection(cost) 
+
+wp_points_as_matrix <- points_in_tanzania%>%
+  st_coordinates(.)
+
+access_raster <- gdistance::accCost(cost_correct, wp_points_as_matrix)
+
+#change the output file name to either all water points or func for just functional water points
+raster::writeRaster(access_raster, "Output_data/func_wp_access_CDMT.TIFF", overwrite=TRUE)
+
+# minutes of travel to a water point
+plot(access_raster)
+```
+
+## Global Human Settlement Layer (GHSL) landcover
+
+Merge the four land cover tiles that cover Tanzania into a single, continuous raster
+
+```{r}
+#creating function for transforming stars to raster
+
+library(terra)
+R10_C21 <- terra::rast("Input_data/GHSL/Rasters/GHS_SMOD_E2020_GLOBE_R2022A_54009_1000_V1_0_R10_C21.tif")
+
+
+R10_C22 <- terra::rast("Input_data/GHSL/Rasters/GHS_SMOD_E2020_GLOBE_R2022A_54009_1000_V1_0_R10_C22.tif")
+R10_C23 <- terra::rast("Input_data/GHSL/Rasters/GHS_SMOD_E2020_GLOBE_R2022A_54009_1000_V1_0_R10_C23.tif")
+R11_C22 <- terra::rast("Input_data/GHSL/Rasters/GHS_SMOD_E2020_GLOBE_R2022A_54009_1000_V1_0_R11_C22.tif")
+R11_C23 <- terra::rast("Input_data/GHSL/Rasters/GHS_SMOD_E2020_GLOBE_R2022A_54009_1000_V1_0_R11_C23.tif")
+
+merge<-terra::mosaic(R10_C21, R10_C22, R10_C23, R11_C22, R11_C23)%>%
+   terra::project(., "EPSG:21035", method="near")
+
+raster::writeRaster(merge, "Output_data/GHSL_merge.tif", overwrite=TRUE)
+
+
+```
+
+## Load rasters to PostGIS
+
+To load rasters into PostGIS, go to `C:\Program Files\PostgreSQL\15\bin`, highlight raster2pgsql then in the window explorer bar (file path bar) type cmd. Run the following, changing the file paths.
+
+```{r, eval=FALSE}
+
+# Worldpop
+
+raster2pgsql.exe -s 4326 -N -32767 -t 100x100 -I -C -M -d C:\Users\Andy\Downloads\tza_ppp_2020_UNadj_constrained.tif  rasters_pop > C:\Users\Andy\Downloads\world_pop_2020.sql
+
+raster2pgsql.exe -s 4326 -N -32767 -t 100x100 -I -C -M -d C:\Users\Andy\Downloads\tza_ppp_2020_UNadj_constrained.tif public.world_pop_2020 | psql -U postgres -d Tanzania_data -h localhost -p 5432
+
+# accessibility raster, either using functional (func) or all water points
+
+raster2pgsql.exe -s 21035 -N -32767 -t 100x100 -I -C -M -d C:\Users\Andy\Downloads\func_wp_access_CDMT.TIFF  access_raster > C:\Users\Andy\Downloads\func_access_raster.sql
+
+raster2pgsql.exe -s 21035 -N -32767 -t 100x100 -I -C -M -d C:\Users\Andy\Downloads\func_wp_access_CDMT.TIFF public.func_access_raster | psql -U postgres -d Tanzania_data -h localhost -p 5432
+
+# landcover
+
+raster2pgsql.exe -s 21035 -N -32767 -t 100x100 -I -C -M -d C:\Users\Andy\Downloads\GHSL_merge.tif  rasters_landcover > C:\Users\Andy\Downloads\rasters_landcover.sql
+
+raster2pgsql.exe -s 21035 -N -32767 -t 100x100 -I -C -M -d C:\Users\Andy\Downloads\GHSL_merge.tif public.landcover | psql -U postgres -d Tanzania_data -h localhost -p 5432
+
+
+
+```

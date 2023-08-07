@@ -1,0 +1,10 @@
+.Rproj.user
+.Rhistory
+.RData
+.Ruserdata
+Input_data/*
+QGIS_project/*
+SQL_scripts/*
+development_scripts_info/*
+Output_data/*
+Accessibility_landcover_data_prep_files/*
